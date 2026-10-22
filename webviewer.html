@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slide Web Viewer</title>
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: "Segoe UI", Arial, sans-serif; background: #fff; }
+  #wrap { display: flex; flex-direction: column; height: 100%; }
+  #bar {
+    display: flex; gap: 6px; align-items: center;
+    padding: 6px; background: #f3f3f3; border-bottom: 1px solid #ccc;
+  }
+  #bar.hidden { display: none; }
+  #url {
+    flex: 1; min-width: 0; padding: 6px 8px; font-size: 14px;
+    border: 1px solid #bbb; border-radius: 4px;
+  }
+  button {
+    padding: 6px 10px; font-size: 13px; cursor: pointer;
+    border: 1px solid #bbb; border-radius: 4px; background: #fff;
+  }
+  button:hover { background: #e8e8e8; }
+  #frame { flex: 1; width: 100%; border: 0; }
+  #hint {
+    font-size: 12px; color: #555; padding: 4px 8px; background: #fffbe6;
+    border-bottom: 1px solid #eee;
+  }
+  #hint a { color: #0563c1; cursor: pointer; }
+  #empty {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    color: #777; font-size: 15px; text-align: center; padding: 20px;
+  }
+  #showBar {
+    position: fixed; top: 4px; right: 4px; opacity: 0; font-size: 11px;
+    padding: 2px 6px;
+  }
+  #showBar:hover { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar">
+    <input id="url" type="text" placeholder="Type a web address, e.g. desmos.com/calculator" autocomplete="off">
+    <button id="go">Go</button>
+    <button id="reload" title="Reload page">Reload</button>
+    <button id="open" title="Open in your normal browser">Open in browser</button>
+    <button id="hide" title="Hide this bar (hover top right corner to bring it back)">Hide bar</button>
+  </div>
+  <div id="hint" style="display:none">
+    Blank page? Some sites (Google, Instagram, many news sites) refuse to be embedded.
+    <a id="hintOpen">Open it in the browser instead</a>.
+  </div>
+  <div id="empty">Enter a web address above to show it on this slide.</div>
+  <iframe id="frame" style="display:none"
+          allow="fullscreen; autoplay; clipboard-read; clipboard-write"
+          allowfullscreen></iframe>
+</div>
+<button id="showBar" style="display:none">Show bar</button>
+
+<script>
+  var urlBox = document.getElementById('url');
+  var frame = document.getElementById('frame');
+  var bar = document.getElementById('bar');
+  var hint = document.getElementById('hint');
+  var empty = document.getElementById('empty');
+  var showBar = document.getElementById('showBar');
+  var inOffice = false;
+  var currentUrl = '';
+
+  // Make common links embeddable and add https:// when missing
+  function normalize(raw) {
+    var u = raw.trim();
+    if (!u) return '';
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+
+    // YouTube watch / short links -> embed links
+    var m = u.match(/youtube\.com\/watch\?v=([\w-]{6,})/i) ||
+            u.match(/youtu\.be\/([\w-]{6,})/i) ||
+            u.match(/youtube\.com\/shorts\/([\w-]{6,})/i);
+    if (m) return 'https://www.youtube.com/embed/' + m[1];
+
+    // Google Slides / Docs: use the embeddable view if possible
+    if (/docs\.google\.com\/presentation\/d\//i.test(u) && !/\/embed/i.test(u)) {
+      return u.replace(/\/(edit|view|pub).*$/i, '/embed');
+    }
+    return u;
+  }
+
+  function load(raw, save) {
+    var u = normalize(raw);
+    if (!u) return;
+    currentUrl = u;
+    urlBox.value = u;
+    empty.style.display = 'none';
+    frame.style.display = 'block';
+    frame.src = u;
+    hint.style.display = 'block';
+    if (save) saveSetting('url', u);
+  }
+
+  function setBarHidden(hidden, save) {
+    bar.classList.toggle('hidden', hidden);
+    showBar.style.display = hidden ? 'block' : 'none';
+    if (save) saveSetting('barHidden', hidden);
+  }
+
+  function openOutside() {
+    if (currentUrl) window.open(currentUrl, '_blank');
+  }
+
+  // Each copy of the viewer on each slide remembers its own address
+  function saveSetting(key, value) {
+    if (!inOffice) {
+      try { localStorage.setItem('swv_' + key, JSON.stringify(value)); } catch (e) {}
+      return;
+    }
+    var s = Office.context.document.settings;
+    s.set(key, value);
+    s.saveAsync();
+  }
+
+  function getSetting(key) {
+    if (!inOffice) {
+      try { return JSON.parse(localStorage.getItem('swv_' + key)); } catch (e) { return null; }
+    }
+    return Office.context.document.settings.get(key);
+  }
+
+  function start() {
+    var saved = getSetting('url');
+    if (saved) load(saved, false);
+    if (getSetting('barHidden') === true) setBarHidden(true, false);
+  }
+
+  document.getElementById('go').onclick = function () { load(urlBox.value, true); };
+  urlBox.addEventListener('keydown', function (e) { if (e.key === 'Enter') load(urlBox.value, true); });
+  document.getElementById('reload').onclick = function () { if (currentUrl) frame.src = currentUrl; };
+  document.getElementById('open').onclick = openOutside;
+  document.getElementById('hintOpen').onclick = openOutside;
+  document.getElementById('hide').onclick = function () { setBarHidden(true, true); };
+  showBar.onclick = function () { setBarHidden(false, true); };
+
+  if (typeof Office !== 'undefined' && Office.onReady) {
+    Office.onReady(function (info) {
+      inOffice = !!(info && info.host);
+      start();
+    });
+  } else {
+    start();
+  }
+</script>
+</body>
+</html>
