@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slide Web Viewer</title>
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: "Segoe UI", Arial, sans-serif; background: #fff; }
+  #wrap { display: flex; flex-direction: column; height: 100%; }
+  #bar {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    padding: 6px; background: #f3f3f3; border-bottom: 1px solid #ccc;
+  }
+  #bar.hidden { display: none; }
+  #url {
+    flex: 1 1 180px; min-width: 120px; padding: 6px 8px; font-size: 14px;
+    border: 1px solid #bbb; border-radius: 4px;
+  }
+  button {
+    padding: 6px 10px; font-size: 13px; cursor: pointer;
+    border: 1px solid #bbb; border-radius: 4px; background: #fff;
+  }
+  button:hover { background: #e8e8e8; }
+  #stage { flex: 1; position: relative; overflow: auto; display: none; background: #e6e6e6; }
+  #zoomBox { position: relative; overflow: hidden; }
+  #frame {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    border: 0; transform-origin: 0 0; background: #fff;
+  }
+  #zoomLabel { min-width: 48px; text-align: center; font-size: 13px; color: #333; cursor: pointer; }
+  #hint {
+    font-size: 12px; color: #555; padding: 4px 8px; background: #fffbe6;
+    border-bottom: 1px solid #eee;
+  }
+  #hint a { color: #0563c1; cursor: pointer; }
+  #empty {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    color: #777; font-size: 15px; text-align: center; padding: 20px; line-height: 1.5;
+  }
+  #showBar {
+    position: fixed; top: 4px; right: 4px; opacity: 0; font-size: 11px;
+    padding: 2px 6px; z-index: 10;
+  }
+  #showBar:hover { opacity: 1; }
+  #filePick { display: none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar">
+    <button id="openFile" title="Load an HTML file from your computer">Open file</button>
+    <button id="zoomOut" title="Zoom out">&minus;</button>
+    <span id="zoomLabel" title="Click to reset to 100%">100%</span>
+    <button id="zoomIn" title="Zoom in">+</button>
+    <input id="url" type="text" placeholder="Type a web address, or click Open file" autocomplete="off">
+    <button id="go">Go</button>
+    <button id="reload" title="Reload">Reload</button>
+    <button id="open" title="Open web address in your normal browser">Open in browser</button>
+    <button id="hide" title="Hide this bar (hover top right corner to bring it back)">Hide bar</button>
+  </div>
+  <div id="hint" style="display:none"></div>
+  <div id="empty">
+    Enter a web address above, or click <b>Open file</b> to show an HTML file from your computer.<br>
+    <small>Tip: when opening a file, also select its images, CSS and JS files (Ctrl+click) so they load too.</small>
+  </div>
+  <div id="stage">
+    <div id="zoomBox">
+      <iframe id="frame"
+              allow="fullscreen; autoplay; clipboard-read; clipboard-write"
+              allowfullscreen></iframe>
+    </div>
+  </div>
+</div>
+<button id="showBar" style="display:none">Show bar</button>
+<input id="filePick" type="file" multiple
+       accept=".html,.htm,.css,.js,.png,.jpg,.jpeg,.gif,.svg,.webp,.json,.mp3,.wav,.mp4">
+
+<script>
+  var urlBox = document.getElementById('url');
+  var frame = document.getElementById('frame');
+  var bar = document.getElementById('bar');
+  var hint = document.getElementById('hint');
+  var empty = document.getElementById('empty');
+  var showBar = document.getElementById('showBar');
+  var filePick = document.getElementById('filePick');
+  var inOffice = false;
+  var currentUrl = '';
+  var currentHtml = '';
+  var mode = '';            // 'url' or 'file'
+  var stage = document.getElementById('stage');
+  var zoomBox = document.getElementById('zoomBox');
+  var zoom = 1;
+  var ZOOMS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+  var SIZE_LIMIT = 1800000; // stay under the ~2 MB Office settings limit
+
+  // ---------- web addresses ----------
+  function normalize(raw) {
+    var u = raw.trim();
+    if (!u) return '';
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+    var m = u.match(/youtube\.com\/watch\?v=([\w-]{6,})/i) ||
+            u.match(/youtu\.be\/([\w-]{6,})/i) ||
+            u.match(/youtube\.com\/shorts\/([\w-]{6,})/i);
+    if (m) return 'https://www.youtube.com/embed/' + m[1];
+    if (/docs\.google\.com\/presentation\/d\//i.test(u) && !/\/embed/i.test(u)) {
+      return u.replace(/\/(edit|view|pub).*$/i, '/embed');
+    }
+    return u;
+  }
+
+  function showFrame() {
+    empty.style.display = 'none';
+    stage.style.display = 'block';
+    layoutZoom();
+  }
+
+  function loadUrl(raw, save) {
+    var u = normalize(raw);
+    if (!u) return;
+    mode = 'url';
+    currentUrl = u;
+    urlBox.value = u;
+    frame.removeAttribute('srcdoc');
+    frame.src = u;
+    showFrame();
+    setHint('Blank page? Some sites (Google, Instagram, many news sites) refuse to be embedded. ' +
+            '<a id="hintOpen">Open it in the browser instead</a>.');
+    document.getElementById('hintOpen').onclick = openOutside;
+    if (save) { saveSetting('mode', 'url'); saveSetting('url', u); }
+  }
+
+  // ---------- local files ----------
+  function loadHtml(html, name, save) {
+    mode = 'file';
+    currentHtml = html;
+    urlBox.value = 'File: ' + name;
+    frame.removeAttribute('src');
+    frame.srcdoc = html;
+    showFrame();
+    hint.style.display = 'none';
+    if (save) {
+      if (html.length > SIZE_LIMIT) {
+        setHint('This file loaded, but it is too large to save inside the presentation (' +
+                Math.round(html.length / 1024) + ' KB). It will need to be opened again next time. ' +
+                'Large images or videos are the usual cause.');
+        return;
+      }
+      saveSetting('mode', 'file');
+      saveSetting('html', html);
+      saveSetting('fileName', name);
+    }
+  }
+
+  function readAs(file, how) {
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(r.result); };
+      r.onerror = reject;
+      if (how === 'text') r.readAsText(file); else r.readAsDataURL(file);
+    });
+  }
+
+  function baseName(path) {
+    return path.split(/[\/\\]/).pop().split(/[?#]/)[0].toLowerCase();
+  }
+
+  // Swap file references (src="img/a.png", url('b.png')) for the actual file data
+  function rewriteRefs(text, map) {
+    text = text.replace(/(\b(?:src|href|poster|data)\s*=\s*)(["'])([^"']+)\2/gi,
+      function (m, pre, q, val) {
+        var d = map[baseName(val)];
+        return (d && !/^(https?:|data:|#)/i.test(val)) ? pre + q + d + q : m;
+      });
+    text = text.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi,
+      function (m, q, val) {
+        var d = map[baseName(val)];
+        return (d && !/^(https?:|data:)/i.test(val)) ? 'url("' + d + '")' : m;
+      });
+    return text;
+  }
+
+  function cssToDataUrl(css) {
+    return 'data:text/css;charset=utf-8,' + encodeURIComponent(css);
+  }
+
+  async function handleFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList);
+    var htmlFile = files.find(function (f) { return /\.html?$/i.test(f.name); });
+    if (!htmlFile) {
+      setHint('Please include an .html file in your selection.');
+      return;
+    }
+    try {
+      var map = {};
+      var cssFiles = [];
+      // Images, scripts, media: embed as data
+      for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        if (f === htmlFile) continue;
+        if (/\.css$/i.test(f.name)) { cssFiles.push(f); continue; }
+        map[f.name.toLowerCase()] = await readAs(f, 'data');
+      }
+      // CSS files can point to images too, so fix those first
+      for (var j = 0; j < cssFiles.length; j++) {
+        var css = await readAs(cssFiles[j], 'text');
+        map[cssFiles[j].name.toLowerCase()] = cssToDataUrl(rewriteRefs(css, map));
+      }
+      var html = await readAs(htmlFile, 'text');
+      html = rewriteRefs(html, map);
+      loadHtml(html, htmlFile.name, true);
+    } catch (e) {
+      setHint('Could not read that file: ' + e);
+    }
+  }
+
+  // ---------- zoom ----------
+  // Shrinks or enlarges everything on the page together, like resizing a picture.
+  // The page always thinks it is the size of the box, so simulations that stretch
+  // to fill the window shrink along with the text.
+  function layoutZoom() {
+    var W = stage.offsetWidth, H = stage.offsetHeight;
+    if (!W || !H) return;
+    frame.style.width = W + 'px';
+    frame.style.height = H + 'px';
+    frame.style.transform = 'scale(' + zoom + ')';
+    zoomBox.style.width = (W * zoom) + 'px';
+    zoomBox.style.height = (H * zoom) + 'px';
+    zoomBox.style.marginLeft = Math.max(0, (W - W * zoom) / 2) + 'px';
+    zoomBox.style.marginTop = Math.max(0, (H - H * zoom) / 2) + 'px';
+  }
+
+  function applyZoom(z, save) {
+    zoom = z;
+    document.getElementById('zoomLabel').textContent = Math.round(z * 100) + '%';
+    layoutZoom();
+    if (save) saveSetting('zoom', z);
+  }
+
+  window.addEventListener('resize', layoutZoom);
+
+  function stepZoom(dir) {
+    var i = ZOOMS.indexOf(zoom);
+    if (i < 0) i = ZOOMS.indexOf(1);
+    i = Math.max(0, Math.min(ZOOMS.length - 1, i + dir));
+    applyZoom(ZOOMS[i], true);
+  }
+
+  // ---------- shared ----------
+  function setHint(text) {
+    hint.innerHTML = text;
+    hint.style.display = 'block';
+  }
+
+  function setBarHidden(hidden, save) {
+    bar.classList.toggle('hidden', hidden);
+    showBar.style.display = hidden ? 'block' : 'none';
+    if (save) saveSetting('barHidden', hidden);
+  }
+
+  function openOutside() {
+    if (mode === 'url' && currentUrl) window.open(currentUrl, '_blank');
+  }
+
+  function reload() {
+    if (mode === 'url' && currentUrl) frame.src = currentUrl;
+    if (mode === 'file' && currentHtml) { frame.srcdoc = ''; frame.srcdoc = currentHtml; }
+  }
+
+  // Each copy of the viewer on each slide keeps its own content in the .pptx
+  function saveSetting(key, value) {
+    if (!inOffice) {
+      try { localStorage.setItem('swv_' + key, JSON.stringify(value)); } catch (e) {}
+      return;
+    }
+    var s = Office.context.document.settings;
+    s.set(key, value);
+    s.saveAsync(function (res) {
+      if (res.status === Office.AsyncResultStatus.Failed) {
+        setHint('Could not save into the presentation: ' + res.error.message);
+      }
+    });
+  }
+
+  function getSetting(key) {
+    if (!inOffice) {
+      try { return JSON.parse(localStorage.getItem('swv_' + key)); } catch (e) { return null; }
+    }
+    return Office.context.document.settings.get(key);
+  }
+
+  function start() {
+    var savedMode = getSetting('mode');
+    if (savedMode === 'file' && getSetting('html')) {
+      loadHtml(getSetting('html'), getSetting('fileName') || 'saved file', false);
+    } else if (getSetting('url')) {
+      loadUrl(getSetting('url'), false);
+    }
+    var z = getSetting('zoom');
+    if (typeof z === 'number' && z > 0) applyZoom(z, false);
+    if (getSetting('barHidden') === true) setBarHidden(true, false);
+  }
+
+  document.getElementById('go').onclick = function () { loadUrl(urlBox.value, true); };
+  urlBox.addEventListener('keydown', function (e) { if (e.key === 'Enter') loadUrl(urlBox.value, true); });
+  document.getElementById('openFile').onclick = function () { filePick.value = ''; filePick.click(); };
+  filePick.onchange = function () { if (filePick.files.length) handleFiles(filePick.files); };
+  document.getElementById('reload').onclick = reload;
+  document.getElementById('zoomOut').onclick = function () { stepZoom(-1); };
+  document.getElementById('zoomIn').onclick = function () { stepZoom(1); };
+  document.getElementById('zoomLabel').onclick = function () { applyZoom(1, true); };
+  document.getElementById('open').onclick = openOutside;
+  document.getElementById('hide').onclick = function () { setBarHidden(true, true); };
+  showBar.onclick = function () { setBarHidden(false, true); };
+
+  if (typeof Office !== 'undefined' && Office.onReady) {
+    Office.onReady(function (info) {
+      inOffice = !!(info && info.host);
+      start();
+    });
+  } else {
+    start();
+  }
+</script>
+</body>
+</html>
